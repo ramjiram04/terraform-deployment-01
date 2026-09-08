@@ -1,0 +1,46 @@
+#!/bin/bash
+exec > /var/log/user-data.log 2>&1
+set -euo pipefail
+
+ANSIBLE_USER='${ansible_username}'
+ANSIBLE_PASSWORD='agenticai123'
+
+if ! id "$ANSIBLE_USER" >/dev/null 2>&1; then
+  useradd --create-home --shell /bin/bash "$ANSIBLE_USER"
+fi
+
+usermod -aG sudo "$ANSIBLE_USER"
+printf '%s:%s\n' "$ANSIBLE_USER" "$ANSIBLE_PASSWORD" | chpasswd
+passwd --unlock "$ANSIBLE_USER"
+
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y python3 openssh-server
+
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$ANSIBLE_USER" > "/etc/sudoers.d/$ANSIBLE_USER"
+chmod 0440 "/etc/sudoers.d/$ANSIBLE_USER"
+
+# Ubuntu cloud images set PasswordAuthentication=no in a 60-cloudimg drop-in.
+# OpenSSH uses the first value it reads, so this file must sort before it.
+install -d -m 0755 /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/00-cloud360-password-auth.conf <<'EOF'
+PasswordAuthentication yes
+KbdInteractiveAuthentication no
+UsePAM yes
+EOF
+chmod 0644 /etc/ssh/sshd_config.d/00-cloud360-password-auth.conf
+/usr/sbin/sshd -t
+if ! /usr/sbin/sshd -T | grep -qx 'passwordauthentication yes'; then
+  echo 'Password authentication is not effective in the resolved SSH configuration' >&2
+  exit 1
+fi
+systemctl restart ssh
+
+# Reuse the AMI's provisioned SSH key for the automation account.
+SOURCE_HOME=$(getent passwd ec2-user 2>/dev/null | cut -d: -f6 || true)
+if [ -z "$SOURCE_HOME" ]; then SOURCE_HOME=$(getent passwd ubuntu 2>/dev/null | cut -d: -f6 || true); fi
+if [ -n "$SOURCE_HOME" ] && [ -f "$SOURCE_HOME/.ssh/authorized_keys" ]; then
+  install -d -m 0700 -o "$ANSIBLE_USER" -g "$ANSIBLE_USER" "/home/$ANSIBLE_USER/.ssh"
+  install -m 0600 -o "$ANSIBLE_USER" -g "$ANSIBLE_USER" "$SOURCE_HOME/.ssh/authorized_keys" "/home/$ANSIBLE_USER/.ssh/authorized_keys"
+fi
+
+touch /var/lib/ansible-bootstrap-complete
