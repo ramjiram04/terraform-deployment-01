@@ -4,5 +4,8 @@
   },
   {
     "bucket_name": "cloudops360-demo-bucket"
+  },
+  {
+    "bucket_name": "cloudops360-demo-bucket-001"
   }
 ]
